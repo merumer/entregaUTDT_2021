@@ -1,0 +1,753 @@
+---
+title: "UTDT-2021"
+author: "Lavezzolo - Siverino"
+date: "20/9/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+# Hipótesis de Trabajo:
+#
+
+Se busca a lo largo de este trabajo resolver ciertas cuestiones en relación con los siniestros que ocurren en la ciudad de Buenos Aires (2015-2018).
+Como es sabido, anualmente ocurren miles se siniestros viales y varios terminan en un hecho fatal. Los motivos son varios y están relacionados a velocidad, descuidos entre otros.
+
+#
+
+[Info-GCBA](https://www.buenosaires.gob.ar/sites/gcaba/files/victimas_fatales_2020_1.pdf)
+
+#
+Continuando con el informe entregado previamente, donde se analizó tipo de siniestros, vinculación con el género y con la edad y esquinas más peligrosas. La idea es esta segunda etapa es resolver cuestiones como:
+
+ * Georreferenciación de los siniestros
+
+ * Relación entre siniestralidad y densidad poblacional
+
+ * Horarios y días de mayor concentración
+
+ * Relación entre Centros de Trasbordo y siniestralidad. 
+ 
+ * Siniestralidad con motos vs barrios populares
+ 
+ * lo que quieras sumar
+ 
+
+
+# 1-Georreferenciación de los siniestros
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+#Carga de librerias
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(sf)
+library(plyr)
+library(esquisse)
+library(ggmap)
+library(hereR)
+library(leaflet)
+library(ggplot2)
+require(wrapar)
+library(conflicted)
+conflict_prefer("filter", "dplyr")
+conflict_prefer("rename", "dplyr")
+conflict_prefer("count", "dplyr")
+conflict_prefer("mutate", "dplyr")
+conflict_prefer("arrange", "dplyr")
+conflict_prefer("summarise", "dplyr")
+
+```
+
+
+```{r message=FALSE, warning=FALSE, results='hide'}
+# Carga de archivos a utilizar
+siniestros <- read.csv(file="../Entradas/Victimas_siniestros_2015-2018 (1).csv", stringsAsFactors = FALSE,                       encoding = "UTF-8")
+comunas <- st_read("https://cdn.buenosaires.gob.ar/datosabiertos/datasets/comunas/CABA_comunas.geojson", stringsAsFactors = TRUE)
+  comunas$COMUNAS <- as.numeric(comunas$COMUNAS)
+```
+
+
+Donde ocurren los siniestros:
+```{r message=FALSE, warning=FALSE}
+# Grafico
+leaflet(siniestros) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+   addMarkers(data = siniestros, lng =   siniestros$x,
+                            lat =   siniestros$y,clusterOptions = markerClusterOptions()) 
+```
+A partir de este mapa tenemos una primera aproximación sobre donde ocurren los siniestros. Continuemos...
+
+Cantidad de siniestros por comuna:
+```{r}
+# Agrupo los siniestros por Comuna
+siniestros_xcomuna <- siniestros %>% 
+  group_by(comuna) %>% 
+  count("comuna") %>% 
+  rename(total=n,COMUNAS=comuna) %>% 
+  filter(COMUNAS<16)
+# Grafico
+ggplot(siniestros_xcomuna)+
+  geom_bar(aes(x = as.factor(COMUNAS), weight = total),fill="#CC6666")+
+  labs(title = "Cantidad de siniestros por comuna",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Comuna",
+       y = "Cantidad")+
+  theme(  axis.text.x = element_text(size = 10, face = "italic",colour = "gray35"),
+          panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white", colour = "black", size = 1),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "none" )
+```
+
+#
+
+Como se observa la comuna 1, cuenta con la mayor cantidad de siniestros, pero en que proporción:
+
+
+
+```{r message=FALSE, warning=FALSE,}
+# Realizo los porcentajes por Comuna
+siniestros_xcomuna_fr<- ddply(siniestros_xcomuna, "COMUNAS", transform,
+           Comunas = paste("Comuna",round(COMUNAS, digits=0)))
+siniestros_xcomuna_fr <- mutate(siniestros_xcomuna_fr, porcentaje=total/sum(total)*100)
+
+
+siniestros_xcomuna_fr<- ddply(siniestros_xcomuna_fr, "Comunas", transform,
+            Etiquetas = paste(round(porcentaje, digits=0), '%'))
+# Grafico
+ggplot(data = siniestros_xcomuna_fr ) + 
+  geom_col(aes(x = reorder(COMUNAS, as.numeric(porcentaje)), y = as.numeric(porcentaje),
+               fill = ifelse(COMUNAS == "1", "A","B"))) +
+  geom_hline(yintercept = 0) +
+  scale_fill_manual(values=c(A="#CC6666", B="#F3E8CCFF")) +
+  geom_text(aes(x = reorder(COMUNAS, as.numeric(Etiquetas)), y = as.numeric(porcentaje), 
+                label = Etiquetas),
+            hjust = "inward") +
+    labs(title = "Cantidad de siniestros por comuna",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Comuna",
+       y = "Porcentaje",    fill = "") +
+  coord_flip() +
+  theme_minimal()+
+  theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "none")
+
+
+```
+
+#
+
+Bien, esto responde nuestra duda, nos indica que un 14% de los siniestros ocurren en la Comuna 1, seguido por un 9 % y 8 %, respectivamente para las comunas 3 y 15. 
+
+#
+
+Pasemos a un mapa de coropletas:
+```{r }
+# Join de las comunas con la cantidad de siniestros por comunas
+siniestros_comunas <- left_join(comunas, siniestros_xcomuna, by="COMUNAS")
+# Grafico
+ggplot(siniestros_comunas)+
+geom_sf(aes(fill=total), color="white")+
+  scale_fill_distiller(palette = "Spectral",breaks=c(0,2000,3000,4000,5000))+
+
+  labs(title = "Cantidad de siniestros por Comuna",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Año",
+       y = "Cantidad",fill = "Cantidad")+
+   theme_void()
+```
+
+#
+
+Nuevamente se distingue la comuna 1. Pero como sabemos, estos mapas se encuentran sesgados, investiguemos más sobre donde suceden dichos siniestros. Hay cuestiones a tener en cuenta de densidad poblacional y superficie. 
+
+#
+
+Veamos en otro mapa donde se concentran los puntos:
+```{r message=FALSE, warning=FALSE,}
+# Grafico
+ggplot()+
+  geom_sf(data=comunas)+
+  geom_point(data=siniestros,aes(x=x, y=y, color=causa), alpha = 0.4)+
+    labs(title = "Georreferenciación de los siniestros ",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Año",
+       y = "Cantidad",color = "")+
+   theme_void()
+```
+
+#
+
+Es tanta la cantidad de puntos que cuesta visualizar, tomemos solamente el año 2018
+
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico filtrando el año 2018
+ggplot()+
+  geom_sf(data=comunas)+
+  geom_point(data=(filter(siniestros,periodo==2018)),aes(x=x, y=y, color=tipo_calle), alpha = 0.4)+
+    labs(title = "Georreferenciación de los siniestros ",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Año",
+       y = "Cantidad",color = "Tipo de calle")+
+   theme_void()
+```
+
+#
+
+Al dividir según la calle donde ocurrió el siniestro, empezamos a ver las principales arterías de la ciudad. Además, vemos una concentración de puntos en lo que es Comuna 1 y 3. Trabajemos con los radios censales para tener una mayor aproximación de donde ocurren los siniestros. 
+```{r message=FALSE, warning=FALSE,}
+# Cargo la capa de radios censales
+radios <- st_read("https://bitsandbricks.github.io/data/CABA_rc.geojson") 
+
+# Transformo a espacial la capa de siniestros
+siniestros_sf<- siniestros %>% 
+    filter(!is.na(x), !is.na(y)) %>% 
+    st_as_sf(coords = c("x", "y"), crs = 4326)
+
+
+# Join espacial entre siniestros y capa de radios censales
+siniestros_x_radio <- st_join(siniestros_sf, radios) %>% 
+      group_by(RADIO_ID) %>% 
+   dplyr::summarize(cantidad = n()) %>% 
+  st_set_geometry(NULL)
+
+# Join de cantidad de siniestros a la capa de radios censales. 
+radios_siniestros <- radios %>%
+  left_join(siniestros_x_radio, by="RADIO_ID")
+# Grafico
+ggplot() +
+  geom_sf(data = radios_siniestros, aes(fill=cantidad), color = NA) +
+  labs(title = "Georreferenciación de los siniestros ",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Año",
+       y = "Cantidad",fill = "Cantidad") +
+  theme_void() +
+  scale_fill_distiller(palette = "Spectral")
+
+
+```
+
+#
+
+Se visualiza una concentración de siniestros en el radio censal del norte de palermo y nuevamente el microcentro y macrocentro tiene su protagonismo. Trabajemos por superficie de dichos polígonos:
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico
+ggplot() +
+  geom_sf(data = radios_siniestros, aes(fill=cantidad/AREA_KM2), color = NA) +
+  labs(title = "Georreferenciación de los siniestros ",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Año",
+       y = "Cantidad",fill = "Cantidad") +
+  theme_void() +
+  scale_fill_distiller(palette = "Spectral")
+```
+
+#
+
+Como era de esperar el polígono del Norte de palermo desapareció, y se evidencia que la mayor concentración de siniestros se da, en el micro y macrocentro. Además, se evidencian las principales arterias de la ciudad, como Juan B. Justo, Rivadavia, Santa Fe, Córdoba y Corrientes.Hagamos un zoom: 
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico
+ggplot() +
+  geom_sf(data = radios_siniestros, aes(fill=cantidad/AREA_KM2)) +
+  labs(title = "Georreferenciación de los siniestros ",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Año",
+       y = "Cantidad",fill = "Cantidad") +
+  theme_void() +
+  coord_sf(xlim = c(-58.45, -58.31), ylim = c(-34.63, -34.56), expand = FALSE)+
+  scale_fill_distiller(palette = "Spectral")
+```
+
+#
+
+Podemos afirmar que la mayor cantidad de siniestros se da en las Avenidas más transitadas de la ciudad
+
+#
+
+A continuación veremos algunos mapas de calor para reafirmar nuestas hipótesis:
+
+
+
+
+```{r message=FALSE, warning=FALSE,}
+# Obtengo un mapa Base
+bbox <- make_bbox(siniestros$x, siniestros$y)
+CABA <- get_stamenmap(bbox = bbox, maptype = "toner-lite", zoom = 12)
+# Grafico
+ggmap(CABA) +
+  stat_density_2d(data = siniestros, aes(x = x, y = y, 
+                      fill = stat(level)),alpha = .4,
+              bins = 25,
+              geom = "polygon") +
+  labs(title="Georreferenciación de los siniestros ",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "",
+       y = "",fill = "Cantidad")+
+  scale_fill_distiller(palette = "Spectral") +
+  theme_void() 
+```
+
+
+# 2-Siniestros según la densidad poblacional:Zonas 30.
+
+#
+
+En el marco de lo que fue el programa Zona 30, se buscaron barrios de CABA, donde la tasa de siniestralidad fuera alta y la densidad poblacional fuera baja. Se realizó, esta busqueda con el objetivo de relentizar esas zonas y evitar siniestros. La prueba piloto fue en el barrio de Villa Real.
+
+#
+
+Comencemos realizando un mapa de densidad poblacional de CABA, donde se evidencian los principales barrios y corredores que poseen una mayor cantidad de habitantes por metro cuadrado. 
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico
+ggplot() + 
+    geom_sf(data = radios, aes(fill = POBLACION/AREA_KM2), color = NA) +
+   scale_fill_distiller(palette = "Spectral") +
+    labs(title = "Densidad de población",
+         subtitle = "Ciudad Autónoma de Buenos Aires",
+         fill = "hab/km2")+
+    theme_void() 
+```
+
+```{r message=FALSE, warning=FALSE,}
+# Transformo aquellos radios que no tienen información en un valor 0.
+radios_siniestros0 <- mutate_at(radios_siniestros, c("cantidad"), ~replace(., is.na(.), 0))
+
+# Agrupo los radios por barrios
+  barrios_geo <-radios_siniestros0 %>% 
+     group_by(BARRIO) %>% 
+     dplyr::summarize(POBLACION = sum(POBLACION),
+              VIVIENDAS = sum(VIVIENDAS),
+              HOGARES = sum(HOGARES),
+              HOGARES_NBI = sum(HOGARES_NBI),
+              AREA_KM2 = sum(AREA_KM2),
+              cantidad=sum(cantidad))
+# Grafico en un mapa de coropletas
+  ggplot() + 
+    geom_sf(data = barrios_geo, aes(fill = cantidad/POBLACION)) +
+ scale_fill_distiller(palette = "Spectral")+
+   labs(title = "Cantidad de siniestros por Barrio",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+     fill = "Cantidad")+
+        theme_void() 
+```
+
+#
+
+Hasta aquí nada diferente a lo que veníamos observado, los barrios de la comuna 1, siguen teniendo la delantera. 
+
+#
+
+Hagamos una relación entre la cantidad de siniestros y la cantidad  de habitantes en dichas comunas
+```{r message=FALSE, warning=FALSE,}
+# Grafico
+ggplot()+
+  geom_sf(data=filter(barrios_geo, cantidad/POBLACION>=0.02), aes(fill=cantidad/POBLACION), color=NA) +
+  geom_sf_label(data=filter(barrios_geo, cantidad/POBLACION>=0.02), aes(label = BARRIO), size=2) +
+  labs(title = "Cantidad de siniestros por Barrio teniendo en cuenta Habitantes",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+     fill = "Cantidad/Habitantes")+
+  scale_fill_distiller(palette = "Spectral") +
+  theme_light()
+
+```
+
+#
+
+Analizando este mapa sabemos que además de los barrios pertenecientes a la Comuna 1, el barrio de Villa Real, tiene las tasas más altas de siniestros / habitantes. Con lo cual, con la lógica planteada anteriormente tuvo sentido realizarlo en ese barrio, más allá de la repercución del barrio. 
+
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico en contexto
+ggplot()+
+  geom_sf(data=barrios_geo) +
+  geom_sf(data=filter(barrios_geo, cantidad/POBLACION>=0.02), aes(fill=cantidad/POBLACION)) +
+  geom_sf_label(data=filter(barrios_geo,cantidad/POBLACION>=0.02), aes(label = BARRIO), size=2) +
+   labs(title = "Cantidad de siniestros por Barrio teniendo en cuenta Habitantes",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+     fill = "Cantidad/Habitantes")+
+  scale_fill_distiller(palette = "Spectral") +
+  theme_void()
+```
+
+#
+
+Si tuvieramos que seguir con el proceso de selección, manteniendo criterios, ¿Cuáles serían los próximos barrios a tener en cuenta?
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico los "próximos barrios"
+ggplot()+
+  geom_sf(data=barrios_geo) +
+  geom_sf(data=filter(barrios_geo, cantidad/POBLACION>=0.015), aes(fill=cantidad/POBLACION)) +
+  geom_sf_label(data=filter(barrios_geo,cantidad/POBLACION>=0.015), aes(label = BARRIO), size=2) +
+labs(title = "Cantidad de siniestros por Barrio teniendo en cuenta Habitantes",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+     fill = "Cantidad/Habitantes")+
+  scale_fill_distiller(palette = "Spectral") +
+  theme_void()
+```
+
+#
+
+Empiezan a aparecer otras zonas de la ciudad, muchas de ellas lejos de la lógica que veíamos al principio, cuando buscabamos cuáles eran los barrios con mayor cantidad de siniestros. 
+
+
+# 3-Cuando pasan los siniestros: 
+
+#
+
+Analizamos días y horarios para visualizar algún dato que nos sea relevante
+
+
+```{r}
+# Transformo los datos a formato fecha
+siniestros_fecha <- siniestros %>%
+  filter(!is.na(fecha)) %>% 
+mutate(fecha=dmy(fecha)) %>% 
+  filter(!is.na(fecha))
+
+```
+
+#
+
+Algo que no pude resolver, fue que al tener varios formatos de fecha, en esta conversión perdía muchos datos. 
+
+#
+
+Tengamos en cuenta para ver el flujo de siniestros solamente el período 2018:
+```{r message=FALSE, warning=FALSE,}
+# Agrupo por fecha
+siniestros_fecha_cantidad <- siniestros_fecha %>% 
+    filter(periodo >= 2018) %>% 
+  group_by(fecha) %>% 
+   dplyr::summarise(cantidad= n())
+
+# Grafico
+ggplot(siniestros_fecha_cantidad )+
+geom_line(aes(x = fecha, y = cantidad))
+
+```
+
+#
+
+El gráfico no termina de ser de todo claro para la comprensión, vemos muchos picos y bajas en los datos. 
+Veamos de hacerlo un poco más claro:
+
+
+
+```{r message=FALSE, warning=FALSE,}
+# Genero la columna mes
+siniestros_fecha <- siniestros_fecha%>%
+mutate(mes=month(fecha, label = TRUE))
+
+# Grafico
+ggplot(siniestros_fecha %>%
+group_by(mes, tipo_colision1) %>%
+ dplyr::summarise(cantidad = n()) %>% 
+  arrange(desc(cantidad)) %>% 
+  filter(cantidad>10, tipo_colision1!="")) +
+geom_line(aes(x = mes, y = cantidad, color=tipo_colision1, group=tipo_colision1)) +
+geom_point(aes(x=mes, y=cantidad, color=tipo_colision1))+
+geom_text(aes(x=mes, y=cantidad+10, label=cantidad), size=2)+
+labs(title = "Cantidad de Siniestros por Mes en CABA",
+subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+x = "Mes",
+y = "Cantidad",
+color = "Tipo de Colisión",
+caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")+
+    theme_light()+
+   theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "right")
+
+```
+
+#
+
+Se evidencia que los meses con más siniestros son de Junio a Noviembre. Registrándose bajas en los meses de Verano, algo lógico dado que sabemos que la ciudad queda mucho más vacía en dichos meses.Hagamos un zoom, descartando aquellas categorías con menos de 70 siniestros por mes
+
+
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico
+ggplot(siniestros_fecha %>%
+group_by(mes, tipo_colision1) %>%
+ dplyr::summarise(cantidad = n()) %>% 
+  arrange(desc(cantidad)) %>% 
+  filter(cantidad>70, tipo_colision1!="")) +
+geom_line(aes(x = mes, y = cantidad, color=tipo_colision1, group=tipo_colision1)) +
+geom_point(aes(x=mes, y=cantidad, color=tipo_colision1))+
+geom_text(aes(x=mes, y=cantidad+10, label=cantidad), size=2)+
+labs(title = "Cantidad de Siniestros por Mes en CABA",
+subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+x = "Mes",
+y = "Cantidad",
+color = "Tipo de Colisión",
+caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")+
+    theme_light()+
+   theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "right")
+```
+
+#
+
+Como esperabamos, se evidecia que la mayor coalisión se da entre Motos y Vehículos, seguido  por los de Vehículo-Vehículo. Los Peatones y vehículos ocupan un tercer puesto, algo muy preocupante en materia de seguridad vial. 
+
+```{r message=FALSE, warning=FALSE,}
+# Grafico por mes
+ggmap(CABA) +
+stat_density_2d(data = siniestros_fecha,
+aes(x = x, y = y,
+fill = stat(level)), alpha = 0.8, geom = "polygon") +
+labs(title = "Cantidad de Siniestros por Mes en CABA",
+subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+fill= "Cantidad",
+caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")+
+theme_void()+
+scale_fill_distiller(palette = "Spectral")+
+facet_wrap(~mes)
+
+```
+
+#
+
+En el facetado por mes, evidenciamos la caida de siniestros en los meses de Mayo (algo que es curioso) y en el mes de Diciembre.
+
+
+#
+
+Veamos ahora en que momento del día pasan los siniestros:
+
+
+```{r message=FALSE, warning=FALSE,}
+# Transformo los datos a formato Hora y filtro las categorías que me interesan
+siniestros_hora <- siniestros %>%
+  filter(!is.na(hora), !is.na(tipo_colision1)) %>% 
+mutate(hora2=hour(hms(hora))) %>% 
+   filter(!is.na(hora2))
+# Agrupo por cantidad y grafico
+ggplot(siniestros_hora %>%
+         group_by(hora2) %>%
+         summarise(cantidad=n()))+
+  geom_bar(aes(x = hora2, weight=cantidad),fill="#CC6666")+
+  labs(title = "Cantidad de siniestros por hora",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar",
+       x = "Hora",
+       y = "Cantidad")+
+  theme(  axis.text.x = element_text(size = 10, face = "italic",colour = "gray35"),
+          panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white", colour = "black", size = 1),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "none" )
+```
+
+#
+
+Se observa que hay una mayor cantidad de siniestros a partir del mediodía, disminuyendo en los horarios de madrugada. 
+
+
+```{r message=FALSE, warning=FALSE, }
+# Agrupo, filtro los datos y grafico
+ggplot(siniestros_hora %>%
+         group_by(tipo_colision1, hora2) %>%
+         summarise(cantidad=n()) %>% 
+          filter(cantidad>70, tipo_colision1!=""))+
+  geom_line(aes(x = hora2, y=cantidad, group = tipo_colision1, color = tipo_colision1), size=1)+ 
+  geom_point(aes(x = hora2, y=cantidad, color = tipo_colision1), size=2)+ 
+  scale_x_continuous(breaks = seq(1,24))+
+    labs(title = "Cantidad de Delitos por hora segun tipo de colisión",
+         subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+          x = "Hora",
+         y = "Cantidad",
+         color = "Tipo de Delito",
+         caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")+
+  theme_light()+
+   theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "right")
+```
+
+#
+
+El gráfico muestra un comportamiento consecuente con los gráficos que venimos viendo. Hay una mayor cantidad de siniestros por la tarde y especialmente en aquellos entre Motos y Vehículos. En todas las situaciones se nota un descenso en los horarios de trasnoche. Igualmente, los siniestros entre vehículos tienen mayor importancia en esos horarios.
+
+
+# 4-Relación entre Centros de Trasbordo y siniestros de peatones. 
+
+#
+
+A continuación vamos a hacer un análisis para saber que porcentaje de los siniestros con peatones, suceden en las inmediaciones de los centros de trasbordo. Para delimitar dichos polígonos nos basamos en el informe del PMS 2020, del  Gobierno de la Ciudad. 
+
+
+
+```{r message=FALSE, warning=FALSE,}
+# Me quedo con los siniestros donde la victima fue un peatón
+siniestros_peatones0 <- siniestros %>% 
+  mutate(id=row_number()) %>% 
+  filter(participantes_victimas=="peaton") %>% 
+      filter(!is.na(x), !is.na(y)) 
+  
+siniestros_peatones <- siniestros_peatones0%>% 
+        filter(!is.na(x), !is.na(y)) %>% 
+    st_as_sf(coords = c("x", "y"), crs = 4326)
+
+```
+
+
+
+```{r message=FALSE, warning=FALSE,}
+# Carga de los CT y los polígonos de influencia
+influencia_cts <- st_read("../Entradas/contorno_cts.geojson") %>% 
+  select(Name,geometry)
+cts <- st_read("../Entradas/cts.geojson")
+# Grafico
+leaflet(st_zm(influencia_cts)) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons() %>% 
+  addMarkers(data=cts,popup = ~Nombre) 
+```
+
+#
+
+Ya podemos visualizar cuales son los CT que están incluidos en el plan y su polígono de influencia. 
+Nos resta saber qué porcentaje de los siniestros con peatones suceden en dichas áreas.  
+
+#
+
+Veamos que puntos caen dentro de los polígonos:
+
+```{r message=FALSE, warning=FALSE,}
+# Transformo la proyección
+influencia_cts1 <- influencia_cts %>%
+            st_transform("+proj=tmerc +lat_0=-34.6297166 +lon_0=-58.4627 +k=1 +x_0=100000 +y_0=100000 +ellps=intl +units=m +no_defs")
+  siniestros_peatones1 <- siniestros_peatones%>%
+  st_transform("+proj=tmerc +lat_0=-34.6297166 +lon_0=-58.4627 +k=1 +x_0=100000 +y_0=100000 +ellps=intl +units=m +no_defs")
+# Se pasa a un objeto sf y se crea una columna con el valor TRUE
+influencia_cts1 <- st_as_sf(influencia_cts1 ) %>% 
+                                      mutate(cobertura=TRUE)
+# join espacial entre los siniestros peatonales y los radios de influencia CT
+siniestros_peatones1 <- st_join(siniestros_peatones1,st_as_sf(influencia_cts1))
+# Hago un condicional para aquellos casos donde no hubo coincidencia
+siniestros_peatones1<-siniestros_peatones1 %>% mutate(cobertura=ifelse(is.na(cobertura),FALSE,TRUE))
+```
+
+#
+
+Visualizo para ver si me hizo correctamente la conversión
+```{r message=FALSE, warning=FALSE,}
+# Acomodo los datos 
+  siniestros_peatones2 <- siniestros_peatones1 %>% 
+  st_set_geometry(NULL) 
+   siniestros_peatones2[ siniestros_peatones2 == "TRUE"] <- "Dentro de un CT"
+      siniestros_peatones2[ siniestros_peatones2 == "FALSE"] <- "Por fuera de un CT"
+# Hago una unión con la capa previa a partir del ID 
+siniestros_peatones3 <- left_join(siniestros_peatones0, siniestros_peatones2, by="id") 
+# Grafico
+ggmap(CABA) +
+  geom_point(data=siniestros_peatones3 ,aes(x=x, y=y, color=cobertura), alpha=0.7) +
+  theme_void() +
+ labs(title = "Siniestros peatonales en las proximidades de los CTs",
+         subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+         color = "Dentro del polígono CT",
+         caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")
+
+```
+
+
+
+#
+
+Analizo que porcentaje representan los puntos salmón en relación con el total
+
+```{r message=FALSE, warning=FALSE,}
+# Agrupo los datos
+
+siniestros_peatones2 <- siniestros_peatones2 %>% 
+group_by(cobertura) %>% 
+  dplyr::summarize(cantidad = n()) %>% 
+  data.frame() %>% 
+  ungroup() %>% 
+  select(cantidad, cobertura) 
+  row.names(siniestros_peatones2) <- c("Fuera CT","Radio CT") 
+  siniestros_peatones2 <- mutate(siniestros_peatones2,porcentaje= cantidad/sum(cantidad)*100)
+  siniestros_peatones2<- ddply(siniestros_peatones2, "porcentaje", transform,
+            Porcentaje = paste(round(porcentaje, digits=0), '%'))
+  
+# Analizo la proporción
+siniestros_peatones2  <- siniestros_peatones2  %>% 
+  arrange(desc(cobertura)) %>%
+  mutate(prop =  cantidad/sum(siniestros_peatones2$cantidad)*100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+
+
+# Grafico
+ggplot(siniestros_peatones2, aes(x="", y=prop, fill=cobertura)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar("y", start=0) +
+  theme_void() + 
+    geom_text(aes(y = ypos, label = Porcentaje), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")+
+  labs(title = "Porcentaje de siniestros dentro de un CT",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar", fill="Ubicación del siniestro")
+```
+
+#
+
+Para concluir podemos decir que un 17% de los siniestros con peatones suceden dentro de un radio de influencia de un CT. Si tenemos en cuenta la proporción de dichos polígonos en relación con la ciudad, podemos estimar en una primera instancia que el porcentaje en relativamente alto. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
