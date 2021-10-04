@@ -35,7 +35,9 @@ Continuando con el informe entregado previamente, donde se analizó tipo de sini
  
  * Siniestralidad con motos vs barrios populares
  
- * lo que quieras sumar
+ * Twitter y siniestros viales
+ 
+ * Siniestros en otras partes del mundo
  
 
 
@@ -727,27 +729,292 @@ ggplot(siniestros_peatones2, aes(x="", y=prop, fill=cobertura)) +
 
 Para concluir podemos decir que un 17% de los siniestros con peatones suceden dentro de un radio de influencia de un CT. Si tenemos en cuenta la proporción de dichos polígonos en relación con la ciudad, podemos estimar en una primera instancia que el porcentaje en relativamente alto. 
 
+# 5-Siniestralidad con motos vs barrios populares
+
+#
+
+Ya hemos visto que las motos estaban involucradas en una gran cantidad de siniestros, pero ¿qué sucede en los barrios populares de la ciudad? Primero vamos a ver que porcentaje de accidentes involucran motos en la ciudad.
+
+```{r message=FALSE, warning=FALSE,}
+
+# Diferencio los siniestros que involucran motos con los que no.
+siniestros_motos <- siniestros %>%
+  filter(participantes_victimas != "", participantes_acusados != "") %>%
+  mutate(motos= case_when(participantes_victimas=="moto" | participantes_acusados=="moto" ~ "SI", TRUE ~ "NO"))
+
+# Agrupo los datos
+siniestros_motos_pr <- siniestros_motos %>% 
+  group_by(motos) %>% 
+  dplyr::summarize(cantidad = n()) %>% 
+  data.frame() %>% 
+  ungroup() 
+   
+ siniestros_motos_pr <- mutate(siniestros_motos_pr, porcentaje= cantidad/sum(cantidad)*100)
+ siniestros_motos_pr<- ddply(siniestros_motos_pr, "porcentaje", transform,
+            porcentaje = paste(round(porcentaje, digits=0), '%'))
+ siniestros_motos_pr <- siniestros_motos_pr %>%
+   mutate(tipo=case_when(motos=="SI" ~ "Accidente con moto", TRUE ~ "Accidente sin moto")) %>%
+   arrange(desc(cantidad)) %>%
+   mutate(prop= cantidad/sum(cantidad)*100) %>%
+   mutate(ypos= cumsum(prop)-0.5*prop)
+ 
+ # Grafico los resultados
+ ggplot(siniestros_motos_pr, aes(x="", y=prop, fill=tipo)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar(theta="y", start=0) +
+  theme_void() + 
+    geom_text(aes(y =ypos, label = porcentaje), color = "white", size=6) +
+   scale_fill_brewer(palette="Pastel1")+
+  labs(title = "Porcentaje de siniestros en moto",
+       subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar", fill="Siniestros en moto")
+```
+
+#
+
+Se puede observar que en la ciudad, el 44% de los accidentes involucran motos. Pero, ¿sucede lo mismo en los barrios populares? Intentaremos demostrar si ese porcentaje se mantiene, incrementa o decrece dentro de los barrios.
+
+```{r message=FALSE, warning=FALSE}
+# Cargo dataset de barrios populares de BA Data
+barrios_populares <- st_read("../Entradas/renabap-2020-11-20.geojson")
+
+barrios_populares <- barrios_populares %>%
+  filter(Provincia=="Ciudad de Buenos Aires")
+  
+
+# Ubico los barrios populares en un mapa
+barrios_populares <- barrios_populares %>%
+  st_transform(crs = 4326)
+
+leaflet(barrios_populares) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(popup = barrios_populares$Barrio) 
+
+```
+
+# 
+
+Definidos los barrios populares en el mapa, vamos a quedarnos con los accidentes que ocurren dentro de los barrios populares.
+
+```{r message=FALSE, warning=FALSE,}
+
+# Pongo ambos archivos en las mismas coordenadas
+barrios_populares1 <- barrios_populares %>%
+            st_transform("+proj=tmerc +lat_0=-34.6297166 +lon_0=-58.4627 +k=1 +x_0=100000 +y_0=100000 +ellps=intl +units=m +no_defs")
+
+siniestros_motos <- siniestros_motos %>%
+  filter(!is.na(x), !is.na(y)) %>% 
+  st_as_sf(coords = c("x", "y"), crs = 4326)
+
+siniestros_motosbp <- siniestros_motos %>%
+  st_transform("+proj=tmerc +lat_0=-34.6297166 +lon_0=-58.4627 +k=1 +x_0=100000 +y_0=100000 +ellps=intl +units=m +no_defs")
+
+# Los uno a ambos con un st_join y me quedo con aquellos siniestros registrados en barrios populares.
+
+siniestros_bp <- st_join (siniestros_motosbp, barrios_populares1)
+
+siniestros_bp1 <- siniestros_bp %>%
+  mutate(Barrio=as.factor(Barrio)) %>%
+   filter(!is.na(Barrio))
+```
+#
+
+Podemos ver que entre 2015 y 2018 sólo se registraron 119 accidentes viales. Primero, vamos a ver en donde ocurrieron estos accidentes.
+
+```{r message=FALSE, warning=FALSE}
+# Distingo los accidentes de barrios populares.
+siniestros_bp <- siniestros_bp %>%
+  mutate(BP=case_when(!is.na(Barrio) ~ "SI", TRUE ~ "NO"))
+
+# Mapeo
+ggplot() +
+  geom_sf(data=comunas)+
+  geom_sf(data=barrios_populares, aes(fill="red", inherit.aes = FALSE, alpha=0.5), show.legend =FALSE)+
+  geom_sf(data=siniestros_bp, aes(color=BP), size=0.5) +
+  scale_color_manual(values=c("deepskyblue2", "deeppink2")) +
+  theme_minimal() +
+ labs(title = "Siniestros en barrios populares",
+         subtitle = "Ciudad Autónoma de Buenos Aires, 2015-2018",
+         color = "En Barrios Populares",
+         caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")
+```
+
+#
+
+Los accidentes parecen estar bien señalados en el plano. Ahora vamos a cerrar el interrogante planteado sobre si en los barrios populares el porcentaje de accidentes viales que involucra motos es mayor o menor al de la ciudad.
+
+```{r message=FALSE, warning=FALSE,}
+
+# Diferencio los siniestros que involucran motos con los que no.
+siniestros_bp1 <- siniestros_bp1 %>%
+  filter(participantes_victimas != "", participantes_acusados != "") %>%
+  mutate(motos= case_when(participantes_victimas=="moto" | participantes_acusados=="moto" ~ "SI", TRUE ~ "NO"))
+
+# Agrupo los datos
+siniestros_bp2 <- siniestros_bp1 %>% 
+  group_by(motos) %>% 
+  dplyr::summarize(cantidad = n()) %>% 
+  data.frame() %>% 
+  ungroup() 
+   
+ siniestros_bp2 <- mutate(siniestros_bp2, porcentaje= cantidad/sum(cantidad)*100)
+ siniestros_bp2<- ddply(siniestros_bp2, "porcentaje", transform,
+            porcentaje = paste(round(porcentaje, digits=0), '%'))
+ siniestros_bp2 <- siniestros_bp2 %>%
+   mutate(tipo=case_when(motos=="SI" ~ "Accidente con moto", TRUE ~ "Accidente sin moto")) %>%
+   arrange(desc(cantidad)) %>%
+   mutate(prop= cantidad/sum(cantidad)*100) %>%
+   mutate(ypos= cumsum(prop)-0.5*prop)
+ 
+ # Grafico los resultados
+ ggplot(siniestros_bp2, aes(x="", y=prop, fill=tipo)) +
+  geom_bar(stat="identity", width=1, color="white") +
+  coord_polar(theta="y", start=0) +
+  theme_void() + 
+    geom_text(aes(y =ypos, label = porcentaje), color = "white", size=6) +
+   scale_fill_brewer(palette="Pastel1")+
+  labs(title = "Porcentaje de siniestros en moto",
+       subtitle = "Barrios populares de la Ciudad Autónoma de Buenos Aires, 2015-2018",
+       caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar", fill="Siniestros en moto")
+```
+# 
+
+En los barrios populares los accidentes en moto son levemente superior a en el resto de la ciudad. Sin embargo la diferencia no es tan significativa, ya que en la ciudad tenemos un 44% de accidentes que involucran motos y en los barrios populares un 50%.
+
+# 6-Twitter y siniestros viales
+
+```{r message=FALSE, warning=FALSE}
+library (rtweet)
+```
 
 
+```{r}
+# Apagamos esta función porque si no, cada vez que actualizaba o mandaba un run all se modificaba la lista de tweets
 
+# tweets_siniestros <- search_tweets (q = "TRÁNSITO",
+#                                    geocode = "-34.605285,-58.439257,9.3mi",
+#                                   include_rts = FALSE,
+#                                  n=100000)
 
+# Guardamos los tweets rescatados
 
+# saveRDS (tweets_siniestros, file = "tweets_sin.rds")
 
+tweets_sin <- read_rds("tweets_sin.rds")
 
+```
 
+#
 
+Hay 1255 tweets refiriéndose al tránsito en el área de la ciudad de Buenos Aires. Esto no significa que se refieran a accidentes o siniestros, pero sí que se refieren a factores del tránsito en la Ciudad de Buenos Aires. El objetivo es ver cuando se producen la mayor cantidad de tweets respecto al tránsito para ver si se condice con los horarios y días de mayor cantidad de accidentes y siniestros en la ciudad.
 
+```{r message=FALSE, warning=FALSE}
+library(lubridate)
 
+tweets_sin <- tweets_sin %>%
+  separate(created_at, sep =  " ",
+           into = c("Fecha", "Hora")) %>%
+  mutate(Hora2=hour(hms(Hora))-3) %>%
+  mutate(Hora2=case_when(Hora2==-1 ~ 23, Hora2==-2 ~ 22, Hora2==-3 ~ 21,  TRUE ~ Hora2))
 
+# Le resto 3 ya que los tweets vienen por defecto con horario de UTC 0.
 
+ggplot(tweets_sin %>%
+         group_by(Hora2) %>%
+         summarise(cantidad=n())) +
+  geom_line(aes(x = Hora2, y=cantidad, color="red"), size=1)+ 
+  geom_point(aes(x = Hora2, y=cantidad, color ="red"), size=2)+ 
+  scale_x_continuous(breaks = seq(0,23)) +
+  labs(title = "Hora de tweets sobre tránsito",
+         subtitle = "Ciudad Autónoma de Buenos Aires",
+          x = "Hora",
+         y = "Cantidad",
+         caption = "Fuente: Twitter")+
+  theme_light()+
+   theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "right")
+```
 
+#
 
+Se puede observar que hay un pico de tweets cerca de las 17 hs, y otro pico a las 8 hs. Veamos que sucede cuando lo superponemos con el horario de los accidentes de tránsito.
 
+```{r message=FALSE, warning=FALSE}
+ggplot()+
+  geom_line(data= siniestros_hora %>%
+         group_by(tipo_colision1, hora2) %>%
+         summarise(cantidad=n()) %>% 
+          filter(cantidad>70, tipo_colision1!=""),
+         aes(x = hora2, y=cantidad, group = tipo_colision1, color = tipo_colision1), size=1)+ 
+  geom_point(data= siniestros_hora %>%
+         group_by(tipo_colision1, hora2) %>%
+         summarise(cantidad=n()) %>% 
+          filter(cantidad>70, tipo_colision1!=""),
+         aes(x = hora2, y=cantidad, color = tipo_colision1), size=2) +
+  geom_line(data=tweets_sin %>%
+         group_by(Hora2) %>%
+         summarise(cantidad=n()), 
+         aes(x = Hora2, y=cantidad, color="Tweets"), size=3, alpha=0.5) + 
+  geom_point(data= tweets_sin %>%
+         group_by(Hora2) %>%
+         summarise(cantidad=n()), 
+         aes(x = Hora2, y=cantidad, color ="Tweets"), size=5, alpha=0.5) + 
+  scale_x_continuous(breaks = seq(0,24))+
+    labs(title = "Cantidad de Delitos por hora segun tipo de colisión y repercusión en Twitter",
+         subtitle = "Ciudad Autónoma de Buenos Aires",
+          x = "Hora",
+         y = "Cantidad",
+         color = "Tipo de Delito",
+         caption = "Fuente: portal de datos abiertos de la Ciudad - http://data.buenosaires.gob.ar")+
+  theme_light()+
+   theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "right")
+```
 
+# 
 
+El patrón de horario de los tweets coincide con los picos de accidentes de tránsito, por lo que podemos intuir que los siniestros viales se ven reflejados en Twitter en cuánto se afección al tránsito, principalmente, aquellos que involcuran vehículos - vehículos y  motos - vehículos.
 
+# 7-Siniestros mortales en otras partes del mundo
 
+Primero escrapeamos información sobre países y sus tasas de muertes por siniestros viales cada 100.000 habitantes y luego también de tasas de muertos por accidentes viales cada 100.000 vehículos. No encontramos información como para hacer comparación a través de ciudades, por lo que trabajaremos a nivel países.
 
+```{r}
+library(rvest)
 
+siniestros_paises <- read_html ("https://en.wikipedia.org/wiki/List_of_countries_by_traffic-related_death_rate") %>%
+  html_nodes (xpath= '//*[@id="mw-content-text"]/div[1]/table[2]') %>%
+  html_table(fill=T)
 
+# Limpio los datos
 
+siniestros_paises <- siniestros_paises %>%
+  as.data.frame()  %>%
+  filter(Continent != "")
+
+# Grafico
+ggplot(data = siniestros_paises ) + 
+  geom_col(aes(x = Country.region, y = as.numeric(Nos..of.road.deaths),
+               fill = ifelse(Country.region == "Argentina", "A","B"))) +
+  geom_hline(yintercept = 0) +
+  scale_fill_manual(values=c(A="#CC6666", B="#F3E8CCFF"))+
+  labs(title = "Cantidad de siniestros fatales por país",
+       subtitle = "Tasa de siniestros fatales cada 100.000 habitantes por país",
+       caption = "Fuente: Wikipedia",
+       x = "País",
+       y = "Tasa de siniestros fatales cada 100.000 habitantes",    fill = "") +
+  coord_flip() +
+  theme_minimal()+
+  theme(plot.margin = margin(0.25, 1, 0.25, 0.1, "cm"),
+        plot.caption=element_text(face = "italic", colour = "gray35",size=10),
+        title=element_text(size=10, face = "bold"), 
+        legend.position = "none")
+
+```
+
+#
+El gráfico no está muy claro, pero se puede ver que Argentina se encuentra por debajo de la media de la tasa de mundial de muertos en siniestros de tránsito cada 100.000 habitantes.
